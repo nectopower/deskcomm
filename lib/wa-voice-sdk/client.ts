@@ -101,6 +101,22 @@ export class SessionsApi {
 // Chamadas
 // ---------------------------------------------------------------------------
 
+/**
+ * O DISCado NÃO CABE NO TIMEOUT PADRÃO, E ISSO FOI MEDIDO.
+ *
+ * `POST /api/sessions/{sid}/calls` do WaCalls só responde depois que o
+ * `CallManager.StartCall` retorna — e ele levou **15,6s** nas duas medições
+ * contra a imagem pinada (uma para um celular real, outra para um número
+ * inexistente; a latência não depende do peer). O timeout padrão de 15s
+ * estourava primeiro: o celular já estava tocando, a rota respondia 502 e
+ * nenhuma `voice_calls` era gravada — chamada órfã, invisível no histórico.
+ *
+ * Trinta e três por cento de folga: `45s`. Curto o bastante para a tela não
+ * parecer travada quando o motor está de fato fora, longo o bastante para
+ * absorver a lentidão conhecida sem inventar uma falha que não houve.
+ */
+export const START_CALL_TIMEOUT_MS = 45_000;
+
 export class CallsApi {
   constructor(private readonly transport: HttpTransport) {}
 
@@ -118,6 +134,7 @@ export class CallsApi {
       {
         headers: { "X-Client-Id": input.clientId },
         body: { phone: input.phone },
+        timeoutMs: START_CALL_TIMEOUT_MS,
       },
     );
     if (!out?.call?.callId) throw WaVoiceError.badResponse("resposta sem call.callId");

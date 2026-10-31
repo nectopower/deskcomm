@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { CallsApi, START_CALL_TIMEOUT_MS } from "./client";
 import { WaVoiceClient, WaVoiceError } from "./index";
+import type { HttpTransport } from "./transport";
 
 const baseUrl = "http://wa-voice-test:8080";
 const token = "token-de-teste";
@@ -72,6 +74,20 @@ describe("WaVoiceClient", () => {
     const body = JSON.parse(init.body as string);
     expect(body).toEqual({ phone: "+5511999998888" });
     expect(body.record).toBeUndefined();
+  });
+
+  it("o discado não usa o timeout padrão de 15s do transporte", async () => {
+    // Regressão medida contra a imagem pinada: o StartCall do WaCalls levou
+    // 15,6s e a rota respondia 502 com o celular já tocando. O padrão de 15s
+    // não cabe nesse endpoint; as outras operações continuam nele.
+    const request = vi.fn().mockResolvedValue({ call: { callId: "call_1" } });
+    const calls = new CallsApi({ request } as unknown as HttpTransport);
+
+    await calls.start({ sessionId: "s1", clientId: "user_1", phone: "+5511999998888" });
+
+    const opts = request.mock.calls[0][2] as { timeoutMs?: number };
+    expect(opts.timeoutMs).toBe(START_CALL_TIMEOUT_MS);
+    expect(START_CALL_TIMEOUT_MS).toBeGreaterThan(15_000);
   });
 
   it("histórico monta query keyset e normaliza a resposta", async () => {

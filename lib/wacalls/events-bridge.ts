@@ -510,6 +510,51 @@ async function handleCallEnded(
 }
 
 /**
+ * O JID QUE O MOTOR CONHECE E O BANCO NÃO GUARDAVA.
+ *
+ * `SessionInfo` do WaCalls carrega `{id, name, jid, state, paired}` e chega no
+ * `session-list`. A ponte ignorava o evento inteiro ("o auth-state já diz tudo"),
+ * mas o `auth-state` só tem `{paired, state, qr}` — o JID nunca chegava ao
+ * `channel_sessions`, e `GET /api/v1/voice/sessions/status` respondia
+ * `jid: null` para uma sessão pareada e no ar.
+ *
+ * Idempotente de propósito: o `session-list` é reemitido a cada mudança de
+ * estado, e `is distinct from` evita reescrever a linha a cada heartbeat.
+ */
+async function gravarJidsDasSessoes(
+  pool: pg.Pool,
+  sessions: unknown[],
+  log: Logger,
+): Promise<void> {
+  for (const bruto of sessions) {
+    if (!bruto || typeof bruto !== 'object') continue;
+    const sessao = bruto as Record<string, unknown>;
+    const id = sessao['id'];
+    const jid = sessao['jid'];
+    if (typeof id !== 'string' || !id) continue;
+    if (typeof jid !== 'string' || !jid) continue;
+    try {
+      await pool.query(
+        `update channel_sessions
+            set wacalls_jid = $2, updated_at = now()
+          where provider = 'wacalls'
+            and wacalls_session_id = $1
+            and archived_at is null
+            and wacalls_jid is distinct from $2`,
+        [id, jid],
+      );
+    } catch (err) {
+      // Um JID perdido não pode derrubar o stream: a próxima sessão do
+      // `session-list` tenta de novo.
+      log.error('wacalls: jid da sessão não pôde ser gravado', {
+        wacalls_session_id: id,
+        error: (err instanceof Error ? err.message : String(err)).slice(0, 300),
+      });
+    }
+  }
+}
+
+/**
  * Uma linha SSE `data: {...}` já sem o prefixo — parseada e despachada.
  *
  * Exportada para que `tests/invariants/voz-ponte-de-eventos.test.ts` exercite os
@@ -584,11 +629,18 @@ export async function despacharEventoWacalls(
     }
     return;
   }
+  // `session-list` é o snapshot das sessões. O `auth-state` incremental já diz
+  // status e pareamento, mas NÃO carrega o JID — e é `wacalls_jid` que a rota
+  // `/api/v1/voice/sessions/status` publica para a tela. Ignorar este evento
+  // deixava `jid: null` no CRM mesmo com a sessão pareada e viva.
+  if (type === 'session-list') {
+    const sessions = ev['sessions'];
+    if (Array.isArray(sessions)) await gravarJidsDasSessoes(pool, sessions, log);
+    return;
+  }
+
   const sessionId = ev['sessionId'];
   if (typeof type !== 'string' || typeof sessionId !== 'string') return;
-  // `session-list` é snapshot pro client React do próprio WaCalls — a
-  // `auth-state` incremental já diz tudo o que o banco precisa.
-  if (type === 'session-list') return;
 
   const sess = await resolveSession(pool, cache, sessionId);
   if (!sess) return; // sessão de outra instalação/teste — não é nossa
