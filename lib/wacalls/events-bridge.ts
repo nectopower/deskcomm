@@ -16,6 +16,7 @@ import type pg from 'pg';
 
 import { phoneLookupVariants } from '@/lib/channels/phone-variants';
 import { emitAgentActivityForContact } from '@/lib/leads/agent-activity';
+import { parseSse } from '@/lib/wa-voice-sdk';
 import { motivoDaChamadaEmPortugues } from '@/lib/wacalls/motivo-da-chamada';
 
 import type { Logger } from '../agent-engine/obs/logger';
@@ -669,31 +670,16 @@ async function pumpSse(
   signal: AbortSignal,
 ): Promise<void> {
   if (!res.body) return;
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = '';
-  try {
-    while (!signal.aborted) {
-      const { done, value } = await reader.read();
-      if (done) return;
-      buf += decoder.decode(value, { stream: true });
-      const lines = buf.split('\n');
-      buf = lines.pop() ?? '';
-      for (const line of lines) {
-        if (!line.startsWith('data:')) continue;
-        const payload = line.slice(5).trim();
-        if (!payload) continue;
-        try {
-          await despacharEventoWacalls(pool, cache, payload, log);
-        } catch (err) {
-          log.error('wacalls: evento falhou ao processar', {
-            error: (err instanceof Error ? err.message : String(err)).slice(0, 300),
-          });
-        }
-      }
+  for await (const message of parseSse(res.body)) {
+    if (signal.aborted) return;
+    if (!message.data) continue;
+    try {
+      await despacharEventoWacalls(pool, cache, message.data, log);
+    } catch (err) {
+      log.error('wacalls: evento falhou ao processar', {
+        error: (err instanceof Error ? err.message : String(err)).slice(0, 300),
+      });
     }
-  } finally {
-    reader.releaseLock();
   }
 }
 
